@@ -52,7 +52,70 @@ export default class WebhookCannon {
 
   async start() {
     console.log("WEBHOOK CANNON STARTED");
-    await this.queue.consume(this.handleQueueMsg.bind(this));
+    await this.queue.consume("webhooks", this.handleQueueMsg.bind(this));
+    await this.queue.consume("events", this.handleEventsQueue.bind(this));
+  }
+
+  async handleEventsQueue (data: ConsumeMessage) {
+    let message;
+    try {
+      message = JSON.parse(data.content.toString());
+      console.log("events: got message", message);
+    } catch (err) {
+      console.log("events: error parsing message", err);
+      this.queue.ack(data);
+      return;
+    }
+    let event = message;
+
+    try {
+      const { data: webhooksList } = await this.db.webhook.listSubscribed(
+        event.userId,
+        event.event
+      );
+  
+      console.log("webhooks : ", webhooksList);
+      let stream = await this.db.stream.get(event.streamId);
+      if (!stream) {
+        // if stream isn't found. don't fire the webhook, log an error
+        return console.error(
+          `webhook Cannon: onTrigger: Stream Not found , streamId: ${event.streamId}`
+        );
+      }
+      // basic sanitization.
+      let sanitized = this.db.stream.addDefaultFields(
+        this.db.stream.removePrivateFields({ ...stream })
+      );
+      delete sanitized.streamKey;
+  
+      let user = await this.db.user.get(event.userId);
+      if (!user) {
+        // if user isn't found. don't fire the webhook, log an error
+        return console.error(
+          `webhook Cannon: onTrigger: User Not found , userId: ${event.userId}`
+        );
+      }
+
+      const responses = await Promise.all(
+        webhooksList.map(async (webhook, key) => {
+          try {
+            this.queue.publish("webhooks.triggers", {
+              id: uuid(),
+              event: event,
+              stream: sanitized,
+              user,
+              webhook
+            })
+          } catch (error) {
+            console.log("Error firing single url webhook trigger", error);
+          }
+        })
+      );
+    } catch (err) {
+      console.log("handleEventQueue Error ", err);
+    }
+
+    this.queue.ack(data);
   }
 
   async handleQueueMsg(data: ConsumeMessage) {
@@ -66,7 +129,8 @@ export default class WebhookCannon {
       return;
     }
     try {
-      await this.onTrigger(message);
+      // TODO Activate URL Verification
+      await this._fireHook(message.event, message.webhook, message.stream, message.user, false);
     } catch (err) {
       this.retry(message);
     }
@@ -231,63 +295,5 @@ export default class WebhookCannon {
       statusCode: resp.status,
       response: resp,
     });
-  }
-
-  async onTrigger(event: WebhookMessage) {
-    console.log("ON TRIGGER triggered", event);
-    if (!event) {
-      // throw new Error('onTrigger requires a Queue event!')
-      // this is fine because pop could return a null if some other client raced and picked the task
-      // faster when it got the NOTIFY call.
-      return;
-    }
-
-    const { data: webhooksList } = await this.db.webhook.listSubscribed(
-      event.userId,
-      event.event
-    );
-
-    console.log("webhooks : ", webhooksList);
-    let stream = await this.db.stream.get(event.streamId);
-    if (!stream) {
-      // if stream isn't found. don't fire the webhook, log an error
-      return console.error(
-        `webhook Cannon: onTrigger: Stream Not found , streamId: ${event.streamId}`
-      );
-    }
-    // basic sanitization.
-    let sanitized = this.db.stream.addDefaultFields(
-      this.db.stream.removePrivateFields({ ...stream })
-    );
-    delete sanitized.streamKey;
-
-    let user = await this.db.user.get(event.userId);
-    if (!user) {
-      // if user isn't found. don't fire the webhook, log an error
-      return console.error(
-        `webhook Cannon: onTrigger: User Not found , userId: ${event.userId}`
-      );
-    }
-
-    try {
-      const responses = await Promise.all(
-        webhooksList.map(async (webhook, key) => {
-          try {
-            await this._fireHook(event, webhook, sanitized, user, false);
-          } catch (error) {
-            console.log("_fireHook Error", error);
-          }
-        })
-      );
-      // this version doesn't have blocking webhooks
-      // if (responses.some((o) => !o)) {
-      //   // at least one of responses is false, blocking this stream
-      //   res.status(403);
-      //   return res.end();
-      // }
-    } catch (e) {
-      console.error("webhook loop error", e);
-      throw e;
-    }
   }
 }

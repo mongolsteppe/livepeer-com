@@ -115,21 +115,19 @@ function validatePushTargets(
   );
 }
 
-async function triggerManyIdleStreamsWebhook(ids, queue) {
-  return Promise.all(
-    ids.map(async (id) => {
-      const stream = await db.stream.get(id);
-      const user = await db.user.get(stream.userId);
-      queue.emit({
-        id: uuid(),
-        createdAt: Date.now(),
-        channel: "webhooks",
-        event: "stream.idle",
-        streamId: stream.id,
-        userId: user.id,
-      });
-    })
-  );
+async function triggerManyIdleStreamsWebhook (ids, queue) {
+  return Promise.all(ids.map(async (id) => {
+    const stream = await db.stream.get(id);
+    const user = await db.user.get(stream.userId);
+    queue.publish("events.stream",{
+      id: uuid(),
+      createdAt: Date.now(),
+      channel: "webhooks",
+      event: "stream.idle",
+      streamId: stream.id,
+      userId: user.id,
+    });
+  }));
 }
 
 export function getRecordingUrl(ingest, session, mp4 = false) {
@@ -880,19 +878,19 @@ app.put(
       return res.json({ errors: ["user is suspended"] });
     }
 
-    // trigger the webhooks, reference https://github.com/livepeer/livepeerjs/issues/791#issuecomment-658424388
-    // this could be used instead of /webhook/:id/trigger (althoughs /trigger requires admin access )
+  // trigger the webhooks, reference https://github.com/livepeer/livepeerjs/issues/791#issuecomment-658424388
+  // this could be used instead of /webhook/:id/trigger (althoughs /trigger requires admin access )
 
-    // -------------------------------
-    // new webhookCannon
-    req.queue.emit({
-      id: uuid(),
-      createdAt: Date.now(),
-      channel: "webhooks",
-      event: req.body.active === true ? "stream.started" : "stream.idle",
-      streamId: id,
-      userId: user.id,
-    });
+  // -------------------------------
+  // new webhookCannon
+  req.queue.publish("events.stream",{
+    id: uuid(),
+    createdAt: Date.now(),
+    channel: "webhooks",
+    event:  req.body.active === true ? "stream.started" : "stream.idle",
+    streamId: id,
+    userId: user.id,
+  });
 
   if (req.body.active === false && stream.record === true) {
     // emit recording.started
@@ -905,7 +903,7 @@ app.put(
       userId: user.id,
     }, USER_SESSION_TIMEOUT)
   } else if (req.body.active === true && stream.record === true) {
-    req.queue.emit({
+    req.queue.publish("events.recording", {
       id: uuid(),
       createdAt: Date.now(),
       channel: "webhooks",
@@ -1444,7 +1442,7 @@ app.post(
         sceneClassification,
       },
     };
-    await req.queue.emit(msg);
+    await req.queue.publish("events.sceneDetection", msg);
     return res.status(204).end();
   }
 );
