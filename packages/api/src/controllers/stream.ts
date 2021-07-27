@@ -1442,7 +1442,8 @@ app.post(
         sceneClassification,
       },
     };
-    await req.queue.publish("events.sceneDetection", msg);
+
+    await req.queue.publish("events.streams", msg);
     return res.status(204).end();
   }
 );
